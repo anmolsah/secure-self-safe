@@ -1,24 +1,46 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { GoogleButton } from "@/components/GoogleButton";
+import { Button } from "@/components/ui/button";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
 export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Private Notes — your rows, only yours" },
+      { name: "description", content: "Sign in with Google and keep notes nobody else can read or edit." },
+      { property: "og:title", content: "Private Notes — your rows, only yours" },
+      { property: "og:description", content: "Sign in with Google and keep notes nobody else can read or edit." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
+    ],
+  }),
   component: Index,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
 function Index() {
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setSignedIn(!!data.user));
+  }, []);
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-8 px-6">
+      <p className="text-sm font-medium uppercase tracking-widest text-primary">Private Notes</p>
+      <h1 className="font-display text-5xl font-bold leading-tight">
+        Your notes. Enforced by the database, not by hope.
+      </h1>
+      <p className="text-lg text-muted-foreground">
+        Every row belongs to the person who wrote it. Row-level security makes sure no one else can
+        read, change, or delete it.
+      </p>
+      {signedIn ? (
+        <Button asChild size="lg" className="self-start">
+          <Link to="/notes">Open my notes</Link>
+        </Button>
+      ) : (
+        <GoogleButton />
+      )}
+    </main>
   );
 }
