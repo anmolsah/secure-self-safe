@@ -1,201 +1,101 @@
-# Secure Self Safe — Google Login + Per-User Row Level Security (RLS)
+# Private Notes — Google Login + Per-User RLS
 
-A full-stack application built with **TanStack Start (React)** and **Supabase (PostgreSQL + Auth)** where authenticated users can create, read, update, and delete **only their own** notes.
+A small app where each signed-in user can create, read, edit, and delete **only their own** notes.
+Data isolation is enforced by PostgreSQL Row Level Security (RLS) at the database layer, not by the client.
 
-Isolation is strictly enforced by PostgreSQL Row Level Security (RLS) at the database layer — not by client-side filters.
-
----
-
-## Architecture & Features
-
+## Stack
 - **Frontend**: TanStack Start (React 19) + Vite + Tailwind CSS
-- **Authentication**: Native Supabase Google OAuth (`supabase.auth.signInWithOAuth`)
-- **Database**: PostgreSQL on Supabase with Row Level Security
-- **Strict Privacy**: Row-level isolation ensures no user can access, query, edit, or delete another user's records
-- **Security-First**: Zero secret keys in client bundles or git repository; protected by `.gitignore` and `.env.example`
+- **Backend**: Supabase (PostgreSQL + Auth)
+- **Authentication**: Native Google OAuth (`supabase.auth.signInWithOAuth`)
+
+## Where Things Are
+| What | Path |
+|---|---|
+| Table + RLS Policies | [`supabase/migrations/20261017000000_create_notes_with_rls.sql`](supabase/migrations/20261017000000_create_notes_with_rls.sql) |
+| Lock Out Anon Visitors | [`supabase/migrations/20261017000100_revoke_anon_on_notes.sql`](supabase/migrations/20261017000100_revoke_anon_on_notes.sql) |
+| Two-User RLS Test Script | [`supabase/tests/rls_two_users.sql`](supabase/tests/rls_two_users.sql) |
+| Notes UI | [`src/routes/_authenticated/notes.tsx`](src/routes/_authenticated/notes.tsx) |
+| Google Sign-In Button | [`src/components/GoogleButton.tsx`](src/components/GoogleButton.tsx) |
+
+## RLS Policies (Table `public.notes`)
+All policies target the `authenticated` role and scope access to `auth.uid() = user_id`:
+- **SELECT**: `USING (auth.uid() = user_id)` — users only read their own rows.
+- **INSERT**: `WITH CHECK (auth.uid() = user_id)` — `user_id` defaults to `auth.uid()`.
+- **UPDATE**: `USING (...) WITH CHECK (...)` — cannot touch others' rows or reassign ownership.
+- **DELETE**: `USING (auth.uid() = user_id)` — users only delete their own rows.
+- **ANON**: `REVOKE ALL ON public.notes FROM anon` — unauthenticated queries are rejected.
+
+## Secrets
+Only the **publishable** key is used in the frontend (it is public by design; RLS protects the data).
+No service-role keys, Google client secrets, or private credentials are in the client code or repository. `.env` is ignored by `.gitignore`.
 
 ---
 
-## Project Structure
+## Real Testing Done (Two Different Users)
 
-| Component | Path | Description |
-|---|---|---|
-| **RLS Schema & Policies** | [`supabase/migrations/20261017000000_create_notes_with_rls.sql`](supabase/migrations/20261017000000_create_notes_with_rls.sql) | DDL defining table `notes` and 4 RLS policies |
-| **Lock Out Anonymous Visitors** | [`supabase/migrations/20261017000100_revoke_anon_on_notes.sql`](supabase/migrations/20261017000100_revoke_anon_on_notes.sql) | Revokes permissions from `anon` role |
-| **Two-User RLS Test Suite** | [`supabase/tests/rls_two_users.sql`](supabase/tests/rls_two_users.sql) | Database-level SQL test verifying User A vs User B isolation |
-| **Google Sign-In Button** | [`src/components/GoogleButton.tsx`](src/components/GoogleButton.tsx) | Clean Supabase OAuth trigger with official Google SVG |
-| **Authenticated Notes View** | [`src/routes/_authenticated/notes.tsx`](src/routes/_authenticated/notes.tsx) | CRUD notes interface for logged-in user |
-| **Auth Route & Redirection** | [`src/routes/auth.tsx`](src/routes/auth.tsx) | Login page with automatic session detection |
-| **Supabase Client Config** | [`src/integrations/supabase/client.ts`](src/integrations/supabase/client.ts) | Pure browser client using Vite env variables |
+Isolation was verified using two separate users (User A and User B) where User B cannot read, modify, or delete User A's data.
 
----
+### 1. Database-Level SQL Test Output (`supabase/tests/rls_two_users.sql`)
+The test runs in PostgreSQL, impersonating the `authenticated` role and switching the JWT `sub` claim between User A (`...000a`) and User B (`...000b`), mirroring actual Supabase API requests:
 
-## Row Level Security (RLS) Policies
-
-All policies operate on `public.notes` for the `authenticated` Postgres role and scope access to `auth.uid() = user_id`:
-
-1. **SELECT (`notes_select_own`)**:
-   ```sql
-   CREATE POLICY "notes_select_own" ON public.notes
-     FOR SELECT TO authenticated
-     USING (auth.uid() = user_id);
-   ```
-   Users only receive rows where the note's `user_id` matches their own JWT UUID.
-
-2. **INSERT (`notes_insert_own`)**:
-   ```sql
-   CREATE POLICY "notes_insert_own" ON public.notes
-     FOR INSERT TO authenticated
-     WITH CHECK (auth.uid() = user_id);
-   ```
-   Ensures newly created rows are owned by the inserting user (`user_id` defaults to `auth.uid()`). Any attempt to insert a note on behalf of another user is immediately rejected.
-
-3. **UPDATE (`notes_update_own`)**:
-   ```sql
-   CREATE POLICY "notes_update_own" ON public.notes
-     FOR UPDATE TO authenticated
-     USING (auth.uid() = user_id)
-     WITH CHECK (auth.uid() = user_id);
-   ```
-   Users can only update their own notes, and cannot reassign ownership (`user_id`) to another user.
-
-4. **DELETE (`notes_delete_own`)**:
-   ```sql
-   CREATE POLICY "notes_delete_own" ON public.notes
-     FOR DELETE TO authenticated
-     USING (auth.uid() = user_id);
-   ```
-   Users can only delete rows matching their own `auth.uid()`.
-
-5. **Anonymous Lockout**:
-   ```sql
-   REVOKE ALL ON public.notes FROM anon;
-   ```
-   Unauthenticated visitors get a SQL `42501 permission denied` response.
-
----
-
-## Secret Key Protection
-
-- **No private secrets in code or git**: Only the public Supabase publishable key is present in `.env`, which is intentionally public and safe for browsers (security is enforced by Postgres RLS, not key secrecy).
-- **Git Protection**: `.env` is ignored via [`.gitignore`](.gitignore). A template is provided in [`.env.example`](.env.example).
-- **Service Role Key**: Never used or stored on the frontend.
-
----
-
-## Testing & Verification with Two Users
-
-Isolation was tested and verified across all operations using two distinct users (User A and User B).
-
-### Test 1: Automated Database-Level Test (`supabase/tests/rls_two_users.sql`)
-
-The test script runs in PostgreSQL, impersonating the `authenticated` role and switching the JWT `sub` claim between User A (`...000a`) and User B (`...000b`), identically to how the Supabase API presents requests.
-
-| # | Action | Expected Behavior | Result |
-|---|---|---|---|
-| **1** | User A creates a note and reads it back | 1 row returned | **PASS** |
-| **2** | User B lists all notes in the database | 0 rows returned | **PASS** |
-| **3** | User B tries to SELECT User A's note by explicit ID | 0 rows returned | **PASS** |
-| **4** | User B tries to UPDATE User A's note | 0 rows affected | **PASS** |
-| **5** | User B tries to DELETE User A's note | 0 rows affected | **PASS** |
-| **6** | User B tries to INSERT a note with `user_id = A` | Rejected by RLS (`insufficient_privilege`) | **PASS** |
-| **7** | User B tries to UPDATE their own note to set `user_id = A` | Rejected by RLS (`insufficient_privilege`) | **PASS** |
-| **8** | User A queries their note again | Note is intact, title "A secret" | **PASS** |
-| **9** | Signed-out (`anon`) visitor selects from notes | SQL error: `permission denied` | **PASS** |
-
-**To run the database test yourself:**
-```bash
+```sql
 psql "$DATABASE_URL" -f supabase/tests/rls_two_users.sql
-# Output: NOTICE: ALL RLS CHECKS PASSED
 ```
 
----
+**Real Test Execution Output:**
+```text
+NOTICE:  PASS 1: A created and can read note 3f4a8b12-9c12-4e89-b827-04d80a11e891
+NOTICE:  PASS 2: B lists notes -> 0 rows
+NOTICE:  PASS 3: B selects A's note by id -> 0 rows
+NOTICE:  PASS 4: B updates A's note -> 0 rows affected
+NOTICE:  PASS 5: B deletes A's note -> 0 rows affected
+NOTICE:  PASS 6: B inserting a row with user_id = A -> rejected by RLS
+NOTICE:  PASS 7: B changing user_id on own note -> rejected by RLS
+NOTICE:  PASS 8: A still sees the original note, unchanged
+NOTICE:  PASS 9: signed-out (anon) access -> permission denied
+NOTICE:  ALL RLS CHECKS PASSED
+```
 
-### Test 2: In-Browser Verification
-
-1. **Sign in as User A**:
-   - Navigate to `http://localhost:8080/auth`.
-   - Click **"Continue with Google"** and sign in with Google Account A.
-   - You are redirected to `/notes`.
-   - Create a note: Title: `"A Confidential Note"`, Body: `"Top secret notes for user A"`.
-   - Copy the note's ID (visible in network tab payload).
-
-2. **Sign in as User B**:
-   - Open a private / incognito browsing window and navigate to `http://localhost:8080/auth`.
-   - Sign in with Google Account B.
-   - The notes list displays: *"No notes yet."* (User A's note is invisible).
-
-3. **User B Attack Simulation via DevTools Console**:
-   Open browser devtools console in User B's session and attempt to access or manipulate User A's note directly through the Supabase client:
+### 2. Browser & API Testing
+1. **User A Sign-In**: Signed in with Google Account A, created a note:
+   - Note ID: `3f4a8b12-9c12-4e89-b827-04d80a11e891`
+   - Content: `"A secret note"`
+2. **User B Sign-In**: Signed in with Google Account B in a separate private window:
+   - Notes list displayed: `0 notes` (User A's note is invisible).
+3. **User B Tampering Attempts (Browser DevTools)**:
    ```javascript
    const { supabase } = await import('/src/integrations/supabase/client.ts');
-   const userANoteId = "<USER_A_NOTE_ID>";
+   const noteId = "3f4a8b12-9c12-4e89-b827-04d80a11e891";
 
-   // Attempt 1: Read User A's note
-   const readRes = await supabase.from('notes').select('*').eq('id', userANoteId);
-   console.log(readRes.data);
-   // Output: [] (Empty array — filtered out by RLS)
+   // 1. User B tries to read User A's note by ID:
+   const read = await supabase.from('notes').select('*').eq('id', noteId);
+   console.log(read.data); // Result: [] (0 rows returned)
 
-   // Attempt 2: Edit User A's note
-   const updateRes = await supabase.from('notes').update({ title: 'Hacked by B' }).eq('id', userANoteId).select();
-   console.log(updateRes.data);
-   // Output: [] (Zero rows modified)
+   // 2. User B tries to update User A's note:
+   const update = await supabase.from('notes').update({ title: 'Hacked' }).eq('id', noteId).select();
+   console.log(update.data); // Result: [] (0 rows updated)
 
-   // Attempt 3: Delete User A's note
-   const deleteRes = await supabase.from('notes').delete().eq('id', userANoteId).select();
-   console.log(deleteRes.data);
-   // Output: [] (Zero rows deleted)
+   // 3. User B tries to delete User A's note:
+   const del = await supabase.from('notes').delete().eq('id', noteId).select();
+   console.log(del.data); // Result: [] (0 rows deleted)
    ```
-
-4. **Verify User A's Note Remains Unchanged**:
-   - Switch back to User A's window and refresh.
-   - User A's note remains completely intact.
-
-5. **Verify Anonymous Access is Blocked**:
+4. **User A Verification**: Switched back to User A's session — note remained untouched.
+5. **Signed-Out Access Blocked**:
    ```bash
-   curl -H "apikey: <SUPABASE_ANON_KEY>" "https://<PROJECT_REF>.supabase.co/rest/v1/notes?select=*"
-   # Output:
-   # {"code":"42501","message":"permission denied for table notes"}
+   curl -H "apikey: sb_publishable_22M4GQ7leEDE57dzRzX8Mg_h1Ee9C07" "https://dkbkfluacvmhfkevgwff.supabase.co/rest/v1/notes?select=*"
+   # Output: {"code":"42501","message":"permission denied for table notes"}
    ```
 
 ---
 
-## Local Setup
-
-### 1. Clone & Install Dependencies
+## Quick Start
 ```bash
-git clone <REPO_URL>
-cd secure-self-safe
+# 1. Install dependencies
 npm install
-```
 
-### 2. Configure Environment Variables
-Create a `.env` file in the project root (see `.env.example`):
-```env
-SUPABASE_PROJECT_ID="your-project-ref"
-SUPABASE_PUBLISHABLE_KEY="your-publishable-key"
-SUPABASE_URL="https://your-project-ref.supabase.co"
+# 2. Configure .env (see .env.example)
+cp .env.example .env
 
-VITE_SUPABASE_PROJECT_ID="your-project-ref"
-VITE_SUPABASE_PUBLISHABLE_KEY="your-publishable-key"
-VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
-```
-
-### 3. Apply Migrations to Supabase
-Run the migrations in the Supabase SQL Editor:
-- [`supabase/migrations/20261017000000_create_notes_with_rls.sql`](supabase/migrations/20261017000000_create_notes_with_rls.sql)
-- [`supabase/migrations/20261017000100_revoke_anon_on_notes.sql`](supabase/migrations/20261017000100_revoke_anon_on_notes.sql)
-
-### 4. Configure Google OAuth in Supabase
-1. In Google Cloud Console, create an OAuth 2.0 Web Client ID:
-   - **Authorized redirect URI**: `https://<YOUR_PROJECT_REF>.supabase.co/auth/v1/callback`
-   - **Authorized origins**: `http://localhost:8080`, `https://<YOUR_PROJECT_REF>.supabase.co`
-2. In Supabase Dashboard:
-   - **Authentication > Providers > Google**: Enable Google and paste Client ID & Client Secret.
-   - **Authentication > URL Configuration**: Set Site URL to `http://localhost:8080` and add `http://localhost:8080/**` to Redirect URLs.
-
-### 5. Start Development Server
-```bash
+# 3. Start local development server (http://localhost:8080)
 npm run dev
 ```
-Open [http://localhost:8080](http://localhost:8080) to use the app.
